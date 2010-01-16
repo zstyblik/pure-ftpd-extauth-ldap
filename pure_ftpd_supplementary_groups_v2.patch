@@ -1,0 +1,112 @@
+diff -urN pure-ftpd-1.0.21/src/ftpd.c pure-ftpd-1.0.21+setgroups/src/ftpd.c
+--- pure-ftpd-1.0.21/src/ftpd.c	2008-10-26 18:31:54.000000000 +0100
++++ pure-ftpd-1.0.21+setgroups/src/ftpd.c	2008-10-26 18:26:51.000000000 +0100
+@@ -1347,6 +1347,9 @@
+     AuthResult result;
+ 
+     result.auth_ok = -1;
++	result.n_groups = 0;
++	result.groups = NULL;
++
+     while (auth_scan != NULL) {
+ #ifdef THROTTLING
+     result.throttling_bandwidth_ul = throttling_bandwidth_ul;
+@@ -1664,6 +1667,13 @@
+         setegid(authresult.gid)) {
+         _EXIT(EXIT_FAILURE);
+     }
++
++# ifdef HAVE_SETGROUPS
++	if (authresult.n_groups > 0 && setgroups(authresult.n_groups, authresult.groups) != 0) {
++        _EXIT(EXIT_FAILURE);
++    }
++# endif
++
+ # ifndef HAVE_SYS_FSUID_H
+     if (seteuid(authresult.uid) != 0) {
+         _EXIT(EXIT_FAILURE);
+diff -urN pure-ftpd-1.0.21/src/ftpd.h pure-ftpd-1.0.21+setgroups/src/ftpd.h
+--- pure-ftpd-1.0.21/src/ftpd.h	2006-02-15 15:05:54.000000000 +0100
++++ pure-ftpd-1.0.21+setgroups/src/ftpd.h	2008-10-26 18:18:55.000000000 +0100
+@@ -268,6 +268,8 @@
+     int auth_ok;                       /* 0=no auth/login not found,1=ok,-1=auth failed */
+     uid_t uid;
+     gid_t gid;
++	gid_t *groups;
++	size_t n_groups;
+     const char *dir;
+     int slow_tilde_expansion;
+ #ifdef THROTTLING
+diff -urN pure-ftpd-1.0.21/src/log_extauth.c pure-ftpd-1.0.21+setgroups/src/log_extauth.c
+--- pure-ftpd-1.0.21/src/log_extauth.c	2004-09-15 22:33:56.000000000 +0200
++++ pure-ftpd-1.0.21+setgroups/src/log_extauth.c	2008-10-26 18:17:02.000000000 +0100
+@@ -48,6 +48,28 @@
+     result->gid = (gid_t) strtoul(str, NULL, 10);
+ }
+ 
++static void callback_reply_groups(const char *str, AuthResult * const result)
++{
++    free(result->groups);
++    result->groups = NULL;
++ 
++    result->n_groups = 0;
++
++    char *copy, *gid, *last, *separator = ",";
++    copy = strdup(str);
++
++    for (gid = strtok_r(copy, separator, &last); gid != NULL; gid = strtok_r(NULL, separator, &last))
++    {
++    	result->n_groups++;
++        if ((result->groups = realloc(result->groups, result->n_groups * sizeof(gid_t))) == NULL)
++  	    die_mem();
++
++        result->groups[result->n_groups - 1]= (gid_t) strtoul(gid, NULL, 10);
++    }
++
++    free(copy);
++}
++
+ static void callback_reply_dir(const char *str, AuthResult * const result)
+ {
+     if (*str == '/') {
+@@ -225,7 +247,9 @@
+     result->uid = (uid_t) 0;
+     result->gid = (gid_t) 0;
+     result->dir = NULL;
+-    result->slow_tilde_expansion = 1;    
++    result->slow_tilde_expansion = 1;
++    result->groups = NULL;
++    result->n_groups = 0;
+     auth_finalized = 0;
+     if ((readen = safe_read(kindy, line, sizeof line)) <= (ssize_t) 0) {
+         goto bye;
+diff -urN pure-ftpd-1.0.21/src/log_extauth.h pure-ftpd-1.0.21+setgroups/src/log_extauth.h
+--- pure-ftpd-1.0.21/src/log_extauth.h	2004-02-29 22:49:28.000000000 +0100
++++ pure-ftpd-1.0.21+setgroups/src/log_extauth.h	2008-10-26 18:17:02.000000000 +0100
+@@ -24,6 +24,7 @@
+ #define EXTAUTH_REPLY_AUTH_OK "auth_ok" EXTAUTH_KEYWORD_SEP
+ #define EXTAUTH_REPLY_UID "uid" EXTAUTH_KEYWORD_SEP
+ #define EXTAUTH_REPLY_GID "gid" EXTAUTH_KEYWORD_SEP
++#define EXTAUTH_REPLY_GROUPS "groups" EXTAUTH_KEYWORD_SEP
+ #define EXTAUTH_REPLY_DIR "dir" EXTAUTH_KEYWORD_SEP
+ #define EXTAUTH_REPLY_SLOW_TILDE_EXPANSION "slow_tilde_expansion" EXTAUTH_KEYWORD_SEP
+ #define EXTAUTH_REPLY_THROTTLING_BANDWIDTH_UL "throttling_bandwidth_ul" EXTAUTH_KEYWORD_SEP
+diff -urN pure-ftpd-1.0.21/src/log_extauth_p.h pure-ftpd-1.0.21+setgroups/src/log_extauth_p.h
+--- pure-ftpd-1.0.21/src/log_extauth_p.h	2004-02-29 22:49:28.000000000 +0100
++++ pure-ftpd-1.0.21+setgroups/src/log_extauth_p.h	2008-10-26 18:17:02.000000000 +0100
+@@ -25,6 +25,7 @@
+ static void callback_reply_auth_ok(const char *str, AuthResult * const result);
+ static void callback_reply_uid(const char *str, AuthResult * const result);
+ static void callback_reply_gid(const char *str, AuthResult * const result);
++static void callback_reply_groups(const char *str, AuthResult * const result);
+ static void callback_reply_dir(const char *str, AuthResult * const result);
+ static void callback_reply_slow_tilde_expansion(const char *str, AuthResult * const result);
+ static void callback_reply_throttling_bandwidth_ul(const char *str, AuthResult * const result);
+@@ -40,6 +41,7 @@
+     { EXTAUTH_REPLY_AUTH_OK, callback_reply_auth_ok },
+     { EXTAUTH_REPLY_UID, callback_reply_uid },
+     { EXTAUTH_REPLY_GID, callback_reply_gid },
++    { EXTAUTH_REPLY_GROUPS, callback_reply_groups },
+     { EXTAUTH_REPLY_DIR, callback_reply_dir },
+     { EXTAUTH_REPLY_SLOW_TILDE_EXPANSION, callback_reply_slow_tilde_expansion },
+     { EXTAUTH_REPLY_THROTTLING_BANDWIDTH_UL, callback_reply_throttling_bandwidth_ul },
