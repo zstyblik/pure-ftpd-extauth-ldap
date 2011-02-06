@@ -6,9 +6,9 @@
 # - straight/proxy auth against LDAP server
 # - access to passwords is not needed by the proxy user
 # - LDAP/LDAPS/TLS is supported
+# - required group(s)
 # Missing features:
 # - *annonymous* *binds* to LDAP *are* currently *unsupported*
-# - required group(s) [it's quite simple, but - later]
 # - quotas and whatever additional features
 # Requirements:
 # - pure-ftpd v1.0.2(1|2)
@@ -24,6 +24,7 @@
 #   it usefull, let me know.
 # 
 # Changes:
+# 11/06/02 - add support for req. groups
 # 09/23/07 - initial release
 #
 # ** Straight bind
@@ -57,7 +58,12 @@
 #
 # 2009/07/23 @ Zdenek Styblik
 #
+# user_quota_size:xxx
+# user_quota_files:xxx
+# per_user_max:xxx
+#
 use strict;
+use warnings;
 use Net::LDAP;
 use Net::LDAP::Constant;
 
@@ -72,24 +78,26 @@ my $ldapUidBaseDN = "ou=people";
 my $ldapUidFilter = "(&(objectClass=posixAccount)(uid=%s))";
 my $ldapGidBaseDN = "ou=group";
 my $ldapGidFilter = "(&(objectClass=posixGroup)(memberUid=%s))";
+my @reqLdapGroups = qw(); # put GID(s) in here!
 
 sub authFail {
-	print "auth_ok:-1\n";
-	print "end\n";
+	printf("auth_ok:-1\n");
+	printf("end\n");
 	exit;
-}
+} # authFail
 
 sub authOk {
 	my ($uid, $gid, $dir, @groups) = @_;
-	print "auth_ok:1\n";
-	print "uid:$uid\n";
-	print "gid:$gid\n";
-	print "dir:$dir\n";
+	printf("auth_ok:1\n");
+	printf("uid:%s\n", $uid);
+	printf("gid:%s\n", $gid);
+	printf("dir:%s\n", $dir);
 	if (@groups > 0) {
-		printf ("groups:%s\n", join(",", @groups));
+		my $groupsStr = join(",", @groups);
+		printf("groups:%s\n", $groupsStr);
 	}
-	print "end\n";
-}
+	printf("end\n");
+} # authOk
 
 
 my $login = $ENV{'AUTHD_ACCOUNT'} || undef;
@@ -163,11 +171,11 @@ if (!$ldapBindDN) {
 	# get other groups, if there are any
 	my $searchBase = $ldapBaseDN;
 	if (defined $ldapGidBaseDN) {
-		$searchBase = $ldapGidBaseDN.",".$ldapBaseDN;
+		$searchBase = sprintf("%s,%s", $ldapGidBaseDN, $ldapBaseDN);
 	}
 	$filter = sprintf($ldapGidFilter, $login);
-	print $searchBase."\n";
-	print $filter."\n";
+	printf("%s\n", $searchBase);
+	printf("%s\n", $filter);
 	$search = $ldapConn->search(
 		base => $searchBase,
 		scope => 'sub',
@@ -194,7 +202,7 @@ if (!$ldapBindDN) {
 	my $filter = sprintf($ldapUidFilter, $login);
 	my $searchBase = $ldapBaseDN; 
 	if (defined $ldapUidBaseDN) {
-		$searchBase = $ldapUidBaseDN.",".$ldapBaseDN;
+		$searchBase = sprintf("%s,%s", $ldapUidBaseDN, $ldapBaseDN);
 	}
 	my $search = $ldapConn->search(
 		base => $searchBase,
@@ -226,11 +234,11 @@ if (!$ldapBindDN) {
 	# get other groups, if there are any
 	$searchBase = $ldapBaseDN;
 	if (defined $ldapGidBaseDN) {
-		$searchBase = $ldapGidBaseDN.",".$ldapBaseDN;
+		$searchBase = sprintf("%s,%s", $ldapGidBaseDN, $ldapBaseDN);
 	}
 	$filter = sprintf($ldapGidFilter, $login);
-	print $searchBase."\n";
-	print $filter."\n";
+	printf("%s\n", $searchBase);
+	printf("%s\n", $filter);
 	$search = $ldapConn->search(
 		base => $searchBase,
 		scope => 'sub',
@@ -247,4 +255,15 @@ if (!$ldapBindDN) {
 	}
 }
 $ldapConn->disconnect;
+
+my $groupsFound = 0;
+my $groupsRequired = @reqLdapGroups;
+for my $group (@groups) {
+	for my $groupLdap (@reqLdapGroups) {
+		$groupsFound+= 1 if ($group eq $groupLdap);
+	}
+} # for $group
+
+&authFail if ($groupsFound != $groupsRequired);
+
 &authOk($uid, $gid, $dir, @groups);
